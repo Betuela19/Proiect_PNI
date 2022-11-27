@@ -1,0 +1,746 @@
+//---------------------------------------------------------------------------
+
+#include <vcl.h>
+#pragma hdrstop
+
+#include "UnitMain.h"
+//---------------------------------------------------------------------------
+#pragma package(smart_init)
+#pragma resource "*.dfm"
+TMainForm *MainForm;
+int SourceHisto[256];
+boolean IsConvertedToGrayScale, SameImage;
+//---------------------------------------------------------------------------
+__fastcall TMainForm::TMainForm(TComponent* Owner)
+        : TForm(Owner)
+{
+        IsConvertedToGrayScale = false;
+        SameImage              = false;
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::btnExecuteClick(TObject *Sender)
+{
+        if( imgSource->Picture->Bitmap->Width == 0 )
+                return;
+        if( cbxHistoType->ItemIndex == -1 )
+          return;
+        if( !IsConvertedToGrayScale )
+        {
+                ConvertToGrayScale();
+                IsConvertedToGrayScale = true;
+        }
+        Graphics::TBitmap *Source   = new Graphics::TBitmap;
+        Source->Assign( imgSource->Picture->Bitmap );
+        Source->PixelFormat = imgSource->Picture->Bitmap->PixelFormat;
+
+        Graphics::TBitmap *Dest = new Graphics::TBitmap;
+        Dest->Width             = Source->Width;
+        Dest->Height            = Source->Height;
+        Dest->PixelFormat       = Source->PixelFormat;
+
+        RGBTRIPLE* Pixels;
+        int        i, j, LUT[256];
+
+        switch( cbxHistoType->ItemIndex )
+        {
+		  case 0 :
+                  EqualizeHistoM1( Source, LUT, false );
+                  break;
+		  case 1:
+                  EqualizeHistoM2( Source, LUT );
+                  break;
+		  case 2:
+                  EqualizeHistoM3( Source, LUT );
+                  break;
+		  case 3:
+                  EqualizeHistoM4( Source, Dest );
+                  break;
+		  case 4:
+                  EqualizeHistoAdaptive( Source, Dest );
+                  break;
+		  case 5:
+				  TransHisto( Source, LUT );
+                  break;
+        }
+
+        if( cbxHistoType->ItemIndex != 3 && cbxHistoType->ItemIndex != 4)
+        {
+          for( int y=0; y<Source->Height; y++ )
+          {
+            Pixels = (RGBTRIPLE*)Source->ScanLine[y];
+            for( int x=0; x<Source->Width; x++ )
+               Dest->Canvas->Pixels[x][y] = TColor( RGB( LUT[Pixels[x].rgbtRed],
+                                                         LUT[Pixels[x].rgbtGreen],
+                                                         LUT[Pixels[x].rgbtBlue] ));
+          }
+        }
+        imgDest->Picture->Bitmap = Dest;
+        DrawDestHistogram();
+        SameImage = true;
+        delete Dest;
+        delete Source;
+}
+//---------------------------------------------------------------------------
+void TMainForm::EqualizeHistoM1( Graphics::TBitmap* Source, int LUT[256], bool ReCalculateHistogram )
+{
+        RGBTRIPLE* Pixels;
+        TColor     Color;
+        int        HistoCum[256], AuxHisto[256], i, j;
+        float      PixelsNr;
+        PixelsNr = Source->Width * Source->Height;
+
+        if ( ReCalculateHistogram )
+        {
+                  for( int i = 0; i < 256; i++ )
+                        AuxHisto[i] = 0;
+                  for( int y=0; y<Source->Height; y++ )
+                  {
+                        Pixels = (RGBTRIPLE*)Source->ScanLine[y];
+                            for (int x=0; x<Source->Width; x++)
+                                AuxHisto[ ( Pixels[x].rgbtRed + Pixels[x].rgbtGreen + Pixels[x].rgbtBlue ) / 3 ]++;
+                  }
+                  HistoCum[0] = AuxHisto[0];
+                  for( i = 1; i<256; i++ )
+                  {
+                        HistoCum[i] = HistoCum[i-1] + AuxHisto[i];
+                        LUT[i] =  (int)(( HistoCum[i] - HistoCum[0] ) * 255 / ( PixelsNr - HistoCum[0]));
+                  }
+        }
+        else
+        {
+                HistoCum[0] = SourceHisto[0];
+                for( i = 1; i<256; i++ )
+                {
+                        HistoCum[i] = HistoCum[i-1] + SourceHisto[i];
+                        LUT[i] =  (int)(( HistoCum[i] - HistoCum[0] ) * 255 / ( PixelsNr - HistoCum[0]));
+                 }
+        }
+}
+//---------------------------------------------------------------------------
+//(p+q)/2
+void TMainForm::EqualizeHistoM2( Graphics::TBitmap* Source, int LUT[256] )
+{
+        RGBTRIPLE* Pixels;
+        TColor     Color;
+        int        HistoCum[256], p[256], q[256], HInt, j, i;
+        float      PixelsNr;
+        PixelsNr = Source->Width * Source->Height;
+
+		j    = 0;
+        HInt = 0;
+        for( i = 0; i<256; i++ )
+                p[i] = q[i] = 0;
+        for( i = 0; i<256; i++ )
+        {
+                p[i] = j;
+                HInt = HInt + SourceHisto[i] * 255;
+                while( HInt >= PixelsNr )
+                {
+                        HInt = HInt - PixelsNr;
+                        j++;
+                }
+                q[i] = j;
+		}
+		// egalizarea histogramei
+        for( i = 0; i<256; i++ )
+                LUT[i] = ( p[i] + q[i] ) / 2;
+}
+//---------------------------------------------------------------------------
+// alegere aleatoare in intervalul [p,q]
+void TMainForm::EqualizeHistoM3( Graphics::TBitmap* Source, int LUT[256] )
+{
+        RGBTRIPLE* Pixels;
+        int        HistoCum[256], p[256], q[256], HInt, j, i;
+        float      PixelsNr;
+        PixelsNr = Source->Width * Source->Height;
+
+        //calcul p si q
+        j    = 0;
+        HInt = 0;
+        for( i = 0; i<256; i++ )
+                p[i] = q[i] = 0;
+        for( i = 0; i<256; i++ )
+        {
+                p[i] = j;
+                HInt = HInt + SourceHisto[i] * 255;
+                while( HInt >= PixelsNr )
+                {
+                        HInt = HInt - PixelsNr;
+                        j++;
+                }
+                q[i] = j;
+        }
+		// egalizarea histogramei
+        randomize();
+        for( i = 0; i<256; i++ )
+                if( (q[i] - p[i] ) == 0 )
+                        LUT[i] = (p[i] + q[i] )/2 ;
+                else
+                        LUT[i] = p[i] + rand() % ( q[i] - p[i] );
+}
+//---------------------------------------------------------------------------
+//nivelul de gri atribuit pixelilor din imaginea initiala se coreleaza cu nivelul de gri al vecinilor sai
+void TMainForm::EqualizeHistoM4( Graphics::TBitmap* Source, Graphics::TBitmap* Dest )
+{
+        RGBTRIPLE* Pixels;
+        TColor     Color;
+        int        HistoCum[256], p[256], q[256], HInt, j, i;
+        float      PixelsNr;
+        PixelsNr = Source->Width * Source->Height;
+        //calcul p si q
+        j    = 0;
+        HInt = 0;
+        for( i = 0; i<256; i++ )
+                p[i] = q[i] = 0;
+        for( i = 0; i<256; i++ )
+        {
+                p[i] = j;
+                HInt = HInt + SourceHisto[i] * 255;
+                while( HInt >= PixelsNr )
+                {
+                      HInt = HInt - PixelsNr;
+                      j++;
+                }
+                q[i] = j;
+        }
+        // egalizarea histogramei
+		RGBTRIPLE* Line[3];
+        float AvgValue;
+        Dest->Assign( Source );
+        for( int y=1; y<Source->Height - 1; y++ )
+        {
+                Line[0] = (RGBTRIPLE*)Source->ScanLine[y - 1];
+                Line[1] = (RGBTRIPLE*)Source->ScanLine[y];
+                Line[2] = (RGBTRIPLE*)Source->ScanLine[y + 1];
+                for( int x=1; x<Source->Width - 1; x++ )
+                {
+                        AvgValue = 0;
+                        for( int i = -1; i<2; i++ )
+                                for( int j = -1; j<2; j++ )
+                                        AvgValue = AvgValue + Line[1+i][x+1+j].rgbtRed;
+
+                                AvgValue = AvgValue / 9;
+                                if( AvgValue < p[ Line[1][x].rgbtRed])
+                                  AvgValue = p[ Line[1][x].rgbtRed];
+                                if( AvgValue > q[ Line[1][x].rgbtRed] )
+                                  AvgValue = q[ Line[1][x].rgbtRed];
+
+                                Dest->Canvas->Pixels[x][y] = TColor( RGB( AvgValue, AvgValue, AvgValue));
+                }
+        }
+}
+//---------------------------------------------------------------------------
+// histograma
+// translatarea liniara a nivelelor de gri
+void TMainForm::TransHisto( Graphics::TBitmap* Source, int LUT[256] )
+{
+        int ConstTrans, y;
+        AnsiString str;
+        str = InputBox( "Constanta de translatie", "Introduceti constanta de translatie", "30");
+        ConstTrans = str.ToIntDef( 0 );
+        if( ConstTrans <= 0 )
+                return;
+        for( int i = 0; i < 256; i++)
+                LUT[i] = ( i + ConstTrans > 255 ? 255 : i + ConstTrans);
+}
+//---------------------------------------------------------------------------
+void TMainForm::EqualizeHistoAdaptive( Graphics::TBitmap* Source, Graphics::TBitmap* Dest )
+{
+        RGBTRIPLE* Pixels;
+        int W, x, y, LUT[256], NrC;
+        AnsiString str;
+        str = InputBox( "Dimensiunea careului", "Introduceti dimensiunea careului", "100");
+        W = str.ToIntDef( 100 );
+        if( W < 100 )
+                W = 100;
+        Graphics::TBitmap *AuxBitmap = new Graphics::TBitmap;
+        AuxBitmap->Width             = W;
+        AuxBitmap->Height            = W;
+        AuxBitmap->PixelFormat       = Source->PixelFormat;
+        int LUTMatrix[150][256];
+        NrC = 0;
+        int i, j = 0, XLimit, YLimit, Limit;
+        while( j / W < ( Source->Height / W + 1) )
+        {
+                i = 0;
+                if( j + W > Source->Height )
+                        YLimit = Source->Height - j;
+                else
+                        YLimit = W;
+                while( i / W < ( Source->Width / W + 1) )
+                {
+                        if( i + W >Source->Width )
+                                XLimit = Source->Width - i;
+                        else
+                                XLimit = W;
+                        for( y = j; y<j + YLimit; y++ )
+                        {
+                                Pixels = (RGBTRIPLE*)Source->ScanLine[y];
+                                for( x=i; x<=i+XLimit; x++ )
+                                        AuxBitmap->Canvas->Pixels[x - i][y - j] = TColor( RGB( Pixels[x].rgbtRed,
+                                                                                Pixels[x].rgbtGreen,
+                                                                                Pixels[x].rgbtBlue));
+                        }
+                        EqualizeHistoM1( AuxBitmap, LUT, true );
+                        for( int k = 0; k<256; k++ )
+                                LUTMatrix[NrC][k] = LUT[k];
+                        i += W;
+                        NrC++;
+                }
+                j += W;
+        }
+        for( i = 0; i<256; i++ )
+        {
+                LUT[i] = 0;
+                for( j = 0; j<NrC; j++ )
+                        LUT[i] += LUTMatrix[j][i];
+                LUT[i] = LUT[i] / NrC;
+        }
+         for( int y=0; y<Source->Height; y++ )
+          {
+            Pixels = (RGBTRIPLE*)Source->ScanLine[y];
+            for( int x=0; x<Source->Width; x++ )
+               Dest->Canvas->Pixels[x][y] = TColor( RGB( LUT[Pixels[x].rgbtRed],
+                                                         LUT[Pixels[x].rgbtGreen],
+                                                         LUT[Pixels[x].rgbtBlue] ));
+          }
+        delete AuxBitmap;
+}
+//---------------------------------------------------------------------------
+void __fastcall TMainForm::DrawSourceHistogram()
+{
+  RGBTRIPLE* Pixels;
+  Graphics::TBitmap *Source = new Graphics::TBitmap;
+  Source->Assign( imgSource->Picture->Bitmap );
+  Source->PixelFormat =  imgSource->Picture->Bitmap->PixelFormat;
+  for( int i = 0; i < 256; i++ )
+      SourceHisto[i] = 0;
+  for( int y=0; y<Source->Height; y++ )
+  {
+    Pixels = (RGBTRIPLE*)Source->ScanLine[y];
+    for (int x=0; x<Source->Width; x++)
+      SourceHisto[ ( Pixels[x].rgbtRed + Pixels[x].rgbtGreen + Pixels[x].rgbtBlue ) / 3 ]++;
+  }
+  chartSource->Series[0]->Clear();
+  for( int i=0; i<256; i++ )
+        chartSource->Series[0]->AddY( SourceHisto[i], "", clGray );
+  chartSource->Series[0]->Active = true;
+}
+
+//---------------------------------------------------------------------------
+void __fastcall TMainForm::DrawDestHistogram()
+{
+  int DestHisto[256];
+  RGBTRIPLE* Pixels;
+  Graphics::TBitmap *Dest = new Graphics::TBitmap;
+  Dest->Assign( imgDest->Picture->Bitmap );
+  Dest->PixelFormat =  imgDest->Picture->Bitmap->PixelFormat;
+  for( int i = 0; i < 256; i++ )
+      DestHisto[i] = 0;
+  for( int y=0; y<Dest->Height; y++ )
+  {
+    Pixels = (RGBTRIPLE*)Dest->ScanLine[y];
+    for (int x=0; x<Dest->Width; x++)
+      DestHisto[ Pixels[x].rgbtRed ]++;
+  }
+  chartDest->Series[0]->Clear();
+  for( int i=0; i<256; i++ )
+        chartDest->Series[0]->AddY( DestHisto[i], "", clGray );
+  chartDest->Series[0]->Active = true;
+}
+
+//---------------------------------------------------------------------------
+void __fastcall TMainForm::mnExitClick(TObject *Sender)
+{
+  Application->Terminate();
+}
+//---------------------------------------------------------------------------
+
+
+void __fastcall TMainForm::FormResize(TObject *Sender)
+{
+  pnImgSource->Height = ( ClientHeight - tbMain->Height ) * 3 / 4;
+  pnImgDest->Height   = pnImgSource->Height;
+  pnImgSource->Width  = ClientWidth / 2;
+  pnImgDest->Width    = pnImgSource->Width;
+  pnImgDest->Left     = ClientWidth / 2;
+
+  chartSource->Height = ClientHeight  - pnImgSource->Height - tbMain->Height;
+  chartDest->Height   = chartSource->Height;
+  chartSource->Width  = pnImgSource->Width;
+  chartDest->Width    = pnImgSource->Width;
+  chartDest->Left     = chartSource->Width;
+  chartSource->Top    = imgSource->Top + imgSource->Height + tbMain->Height;
+  chartDest->Top      = chartSource->Top;
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::ConvertToGrayScale()
+{
+        Graphics::TBitmap *Source   = new Graphics::TBitmap;
+        Source->Assign( imgSource->Picture->Bitmap );
+        Source->PixelFormat = imgSource->Picture->Bitmap->PixelFormat;
+
+        Graphics::TBitmap *Dest = new Graphics::TBitmap;
+        Dest->Width             = Source->Width;
+        Dest->Height            = Source->Height;
+        Dest->PixelFormat       = Source->PixelFormat;
+
+        RGBTRIPLE* Pixels;
+        Byte       GrayValue;
+        for( int y=0; y<Source->Height; y++ )
+        {
+                Pixels = (RGBTRIPLE*)Source->ScanLine[y];
+                for( int x=0; x<Source->Width; x++ )
+                {
+                       GrayValue = ( Pixels[x].rgbtRed + Pixels[x].rgbtGreen + Pixels[x].rgbtBlue ) / 3;
+                       Dest->Canvas->Pixels[x][y] = TColor( RGB( GrayValue, GrayValue, GrayValue ));
+                }
+        }
+        imgSource->Picture->Bitmap = Dest;
+        delete Source;
+        delete Dest;
+}
+
+void __fastcall TMainForm::FormCreate(TObject *Sender)
+{
+  DoubleBuffered = true;
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::btnMagnifierClick(TObject *Sender)
+{
+        if( imgSource->Picture->Bitmap->Width == 0 )
+                return;
+        pnSMag->Visible = ( !pnSMag->Visible );
+        if( SameImage == true )
+                pnDMag->Visible = ( !pnDMag->Visible );
+        imgSource->Cursor = ( pnSMag->Visible == true ? crHandPoint : crDefault);
+        imgDest->Cursor   = ( pnDMag->Visible == true ? crHandPoint : crDefault);
+
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::imgSourceMouseMove(TObject *Sender,
+      TShiftState Shift, int X, int Y)
+{
+        TRect SRect, DRect;
+        float  NewWidth, NewHeight, StretchCoefW, StretchCoefH;
+        if( pnSMag->Visible == false )
+                return;
+        if( imgSource->Picture->Bitmap->Width < imgSource->Width || imgSource->Picture->Bitmap->Height < imgSource->Height )
+        {
+                NewWidth  = imgSource->Picture->Bitmap->Width;
+                NewHeight = imgSource->Picture->Bitmap->Height;
+        }
+        else
+        {
+                if( imgSource->Picture->Bitmap->Width >= imgSource->Picture->Bitmap->Height )
+                {
+                        NewWidth  = imgSource->Width;
+                        NewHeight = imgSource->Picture->Bitmap->Height/ (float)imgSource->Picture->Bitmap->Width * imgSource->Width;
+                }
+                else
+                {
+                        NewHeight = imgSource->Height;
+						NewWidth  = imgSource->Picture->Bitmap->Width / (float)imgSource->Picture->Bitmap->Height * imgSource->Height;
+                }
+        }
+		StretchCoefW = (float)imgSource->Picture->Bitmap->Width  / NewWidth;
+        StretchCoefH = (float)imgSource->Picture->Bitmap->Height / NewHeight;
+		SRect.left   = (X - (imgSource->Width  - NewWidth )/2.0 ) * StretchCoefW - 20;
+		SRect.top    = (Y - (imgSource->Height - NewHeight)/2.0 ) * StretchCoefH - 20;
+		SRect.right  = (X - (imgSource->Width  - NewWidth )/2.0 ) * StretchCoefW + 20;
+		SRect.bottom = (Y - (imgSource->Height - NewHeight)/2.0 ) * StretchCoefH + 20;
+        DRect.left  = DRect.top = 0;
+		DRect.right = DRect.bottom = 200;
+		Image1->Canvas->Brush->Color = clInfoBk;
+		Image1->Canvas->FillRect( DRect );
+		Image1->Canvas->CopyMode = cmSrcCopy;
+		Image1->Canvas->CopyRect( DRect, imgSource->Canvas, SRect );
+		//
+        if( SameImage == true )
+        {
+				Image2->Canvas->Brush->Color = clInfoBk;
+				Image2->Canvas->FillRect( DRect );
+				Image2->Canvas->CopyMode = cmSrcCopy;
+				Image2->Canvas->CopyRect( DRect, imgDest->Canvas, SRect );
+                Image2->Visible = true;
+        }
+        else
+				Image2->Visible = false;
+		imgDest->Cursor = ( Image2->Visible == true ? crHandPoint : crDefault);
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::imgDestMouseMove(TObject *Sender,
+      TShiftState Shift, int X, int Y)
+{
+        TRect SRect, DRect;
+        float StretchCoefW, StretchCoefH,  NewWidth, NewHeight;
+        if( pnDMag->Visible == false )
+                return;
+        if( imgSource->Picture->Bitmap->Width < imgDest->Width || imgDest->Picture->Bitmap->Height < imgDest->Height )
+        {
+                NewWidth  = imgDest->Picture->Bitmap->Width;
+                NewHeight = imgDest->Picture->Bitmap->Height;
+        }
+        else
+        {
+                if( imgDest->Picture->Bitmap->Width >= imgDest->Picture->Bitmap->Height )
+                {
+                        NewWidth  = imgDest->Width;
+                        NewHeight = imgDest->Picture->Bitmap->Height/ (float)imgDest->Picture->Bitmap->Width * imgDest->Width;
+                }
+                else
+                {
+                        NewHeight = imgDest->Height;
+                        NewWidth  = imgDest->Picture->Bitmap->Width / (float)imgDest->Picture->Bitmap->Height * imgDest->Height;
+                }
+        }
+        StretchCoefW = (float)imgDest->Picture->Bitmap->Width  / NewWidth;
+        StretchCoefH = (float)imgDest->Picture->Bitmap->Height / NewHeight;
+        SRect.left   = (X - (imgDest->Width  - NewWidth )/2.0 ) * StretchCoefW - 20;
+        SRect.top    = (Y - (imgDest->Height - NewHeight)/2.0 ) * StretchCoefH - 20;
+        SRect.right  = (X - (imgDest->Width  - NewWidth )/2.0 ) * StretchCoefW + 20;
+        SRect.bottom = (Y - (imgDest->Height - NewHeight)/2.0 ) * StretchCoefH + 20;
+        DRect.left  = DRect.top = 0;
+        DRect.right = DRect.bottom = 200;
+		Image2->Canvas->Brush->Color = clInfoBk;
+		Image2->Canvas->FillRect( DRect );
+		Image2->Canvas->CopyMode = cmSrcCopy;
+        Image2->Canvas->CopyRect( DRect, imgDest->Canvas, SRect );
+}
+//---------------------------------------------------------------------------
+
+
+void __fastcall TMainForm::Deschide1Click(TObject *Sender)
+{
+   if( dlgOpen->Execute() )
+		{
+			if( !FileExists( dlgOpen->FileName ) )
+				return;
+			IsConvertedToGrayScale = false;
+			AnsiString FileName      = ExtractFileName( dlgOpen->FileName );
+			AnsiString FileExtension = ExtractFileExt ( dlgOpen->FileName ).LowerCase();
+			if( FileExtension.AnsiPos( "jpg" ) > 0 )
+			{
+				TJPEGImage *JpgImage = new TJPEGImage();
+				JpgImage->LoadFromFile( dlgOpen->FileName );
+				JpgImage->DIBNeeded();
+				if( JpgImage->Width < imgSource->Width || JpgImage->Height < imgSource->Height )
+				{
+						imgSource->Stretch = false;
+						imgDest->Stretch   = false;
+				}
+				imgSource->Picture->Bitmap->Assign( JpgImage );
+				delete JpgImage;
+			}
+			else
+			{
+
+				if( FileExtension.AnsiPos( "bmp" ) > 0 )
+				{
+						imgSource->Picture->Bitmap->LoadFromFile( dlgOpen->FileName );
+						if( imgSource->Picture->Bitmap->Width < imgSource->Width || imgSource->Picture->Bitmap->Height < imgSource->Height )
+						{
+								imgSource->Stretch = false;
+								imgDest->Stretch   = false;
+                        }
+                }
+            }
+            DrawSourceHistogram();
+			cbxHistoType->ItemIndex = 0;
+            SameImage = false;
+        }
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::Deschide2Click(TObject *Sender)
+{
+    if( imgSource->Picture->Bitmap->Width == 0 )
+				return;
+		dlgSave->FilterIndex = 1;
+		if( dlgSave->Execute())
+		{
+			AnsiString Extension = ExtractFileExt( dlgSave->FileName ).LowerCase();
+			if( Extension.AnsiPos( "jpg" ) > 0 )
+			{
+				TJPEGImage *JPGImage = new TJPEGImage();
+				try
+				{
+				  JPGImage->Assign    ( imgDest->Picture->Bitmap );
+				  JPGImage->SaveToFile( dlgSave->FileName );
+                }
+				__finally
+				{
+				  delete JPGImage;
+				}
+			}
+			else
+				if( Extension.AnsiPos( "bmp" ) > 0 )
+						imgDest->Picture->Bitmap->SaveToFile( dlgSave->FileName );
+        }
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::ransforma1Click(TObject *Sender)
+{
+    if( imgSource->Picture->Bitmap->Width == 0 )
+                return;
+        if( cbxHistoType->ItemIndex == -1 )
+          return;
+        if( !IsConvertedToGrayScale )
+        {
+                ConvertToGrayScale();
+                IsConvertedToGrayScale = true;
+        }
+        Graphics::TBitmap *Source   = new Graphics::TBitmap;
+        Source->Assign( imgSource->Picture->Bitmap );
+        Source->PixelFormat = imgSource->Picture->Bitmap->PixelFormat;
+
+        Graphics::TBitmap *Dest = new Graphics::TBitmap;
+        Dest->Width             = Source->Width;
+        Dest->Height            = Source->Height;
+        Dest->PixelFormat       = Source->PixelFormat;
+
+        RGBTRIPLE* Pixels;
+        int        i, j, LUT[256];
+
+        switch( cbxHistoType->ItemIndex )
+        {
+		  case 0 :
+                  EqualizeHistoM1( Source, LUT, false );
+                  break;
+		  case 1:
+                  EqualizeHistoM2( Source, LUT );
+                  break;
+		  case 2:
+                  EqualizeHistoM3( Source, LUT );
+                  break;
+		  case 3:
+                  EqualizeHistoM4( Source, Dest );
+                  break;
+		  case 4:
+                  EqualizeHistoAdaptive( Source, Dest );
+                  break;
+		  case 5:
+				  TransHisto( Source, LUT );
+                  break;
+        }
+
+        if( cbxHistoType->ItemIndex != 3 && cbxHistoType->ItemIndex != 4)
+        {
+          for( int y=0; y<Source->Height; y++ )
+          {
+            Pixels = (RGBTRIPLE*)Source->ScanLine[y];
+            for( int x=0; x<Source->Width; x++ )
+               Dest->Canvas->Pixels[x][y] = TColor( RGB( LUT[Pixels[x].rgbtRed],
+                                                         LUT[Pixels[x].rgbtGreen],
+                                                         LUT[Pixels[x].rgbtBlue] ));
+          }
+        }
+        imgDest->Picture->Bitmap = Dest;
+        DrawDestHistogram();
+        SameImage = true;
+        delete Dest;
+        delete Source;
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::btnLoadClick(TObject *Sender)
+{
+    if( dlgOpen->Execute() )
+        {
+            if( !FileExists( dlgOpen->FileName ) )
+                return;
+            IsConvertedToGrayScale = false;
+            AnsiString FileName      = ExtractFileName( dlgOpen->FileName );
+            AnsiString FileExtension = ExtractFileExt ( dlgOpen->FileName ).LowerCase();
+            if( FileExtension.AnsiPos( "jpg" ) > 0 )
+            {
+                TJPEGImage *JpgImage = new TJPEGImage();
+                JpgImage->LoadFromFile( dlgOpen->FileName );
+                JpgImage->DIBNeeded();
+                if( JpgImage->Width < imgSource->Width || JpgImage->Height < imgSource->Height )
+                {
+                        imgSource->Stretch = false;
+                        imgDest->Stretch   = false;
+                }
+                imgSource->Picture->Bitmap->Assign( JpgImage );
+                delete JpgImage;
+            }
+            else
+            {
+
+                if( FileExtension.AnsiPos( "bmp" ) > 0 )
+                {
+                        imgSource->Picture->Bitmap->LoadFromFile( dlgOpen->FileName );
+                        if( imgSource->Picture->Bitmap->Width < imgSource->Width || imgSource->Picture->Bitmap->Height < imgSource->Height )
+                        {
+                                imgSource->Stretch = false;
+                                imgDest->Stretch   = false;
+                        }
+                }
+            }
+            DrawSourceHistogram();
+            cbxHistoType->ItemIndex = 0;
+            SameImage = false;
+        }
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::btnSaveClick(TObject *Sender)
+{
+      if( imgSource->Picture->Bitmap->Width == 0 )
+                return;
+        dlgSave->FilterIndex = 1;
+        if( dlgSave->Execute())
+        {
+            AnsiString Extension = ExtractFileExt( dlgSave->FileName ).LowerCase();
+            if( Extension.AnsiPos( "jpg" ) > 0 )
+            {
+                TJPEGImage *JPGImage = new TJPEGImage();
+                try
+                {
+                  JPGImage->Assign    ( imgDest->Picture->Bitmap );
+                  JPGImage->SaveToFile( dlgSave->FileName );
+                }
+                __finally
+                {
+                  delete JPGImage;
+                }
+            }
+            else
+                if( Extension.AnsiPos( "bmp" ) > 0 )
+                        imgDest->Picture->Bitmap->SaveToFile( dlgSave->FileName );
+        }
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TMainForm::Inversareculori1Click(TObject *Sender)
+{
+     Image1->Enabled=false;
+         Graphics::TBitmap *source = new Graphics::TBitmap;
+         source->Assign( Image1->Picture->Bitmap );
+         source->PixelFormat = Image1->Picture->Bitmap->PixelFormat;
+
+         Graphics::TBitmap *dest = new Graphics::TBitmap;
+         dest->Width = source->Width;
+         dest->Height = source->Height;
+         dest->PixelFormat = source->PixelFormat;
+         RGBTRIPLE* pixels;
+
+        for(int y=0;y<source->Height;y++)
+        {
+         pixels=(RGBTRIPLE *)source->ScanLine[y];
+         for(int x=0;x<source->Width;x++)
+         dest->Canvas->Pixels[x][y]=TColor(RGB(255- pixels[x].rgbtRed,255 - pixels[x].rgbtGreen,255 - pixels[x].rgbtBlue));
+         }
+        Image2->Picture->Bitmap=dest;
+        delete dest;  delete source;
+}
+//---------------------------------------------------------------------------
+
